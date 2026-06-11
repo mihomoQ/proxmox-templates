@@ -17,6 +17,7 @@ WORKDIR="${WORKDIR:-$HOME/pve-cloud-build/${IMAGE_ID}-${IMAGE_PROFILE}}"
 TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
 IMAGE_DISK_SIZE="${IMAGE_DISK_SIZE:-}"
 ROOT_PARTITION="${ROOT_PARTITION:-/dev/sda1}"
+IMAGE_FALLBACK_URL=""
 
 INSTALL_DOCKER="${INSTALL_DOCKER:-true}"
 INSTALL_SPEEDTEST="${INSTALL_SPEEDTEST:-true}"
@@ -43,6 +44,7 @@ case "${IMAGE_ID}" in
     OS_RELEASE="12"
     IMAGE_NAME="debian-12-genericcloud-amd64-pve-${IMAGE_PROFILE}"
     IMAGE_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+    IMAGE_FALLBACK_URL="https://cdimage.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
     DOCKER_OS="debian"
     ;;
   debian13)
@@ -50,6 +52,7 @@ case "${IMAGE_ID}" in
     OS_RELEASE="13"
     IMAGE_NAME="debian-13-genericcloud-amd64-pve-${IMAGE_PROFILE}"
     IMAGE_URL="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+    IMAGE_FALLBACK_URL="https://cdimage.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
     DOCKER_OS="debian"
     ;;
   ubuntu2204)
@@ -109,6 +112,9 @@ echo "开始定制 PVE Cloud Image"
 echo "镜像 ID：${IMAGE_ID}"
 echo "镜像档位：${IMAGE_PROFILE}"
 echo "镜像地址：${IMAGE_URL}"
+if [ -n "${IMAGE_FALLBACK_URL}" ]; then
+  echo "备用镜像地址：${IMAGE_FALLBACK_URL}"
+fi
 echo "工作目录：${WORKDIR}"
 echo "最终镜像：${FINAL_IMAGE}"
 echo "系统：${OS_FAMILY} ${OS_RELEASE}"
@@ -139,9 +145,40 @@ echo "[2/8] 创建工作目录..."
 mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
+download_cloud_image() {
+  local dest="$1"
+  shift
+  local tmp="${dest}.part"
+  local url
+
+  rm -f "${tmp}"
+  for url in "$@"; do
+    [ -n "${url}" ] || continue
+    echo "尝试下载：${url}"
+    if wget \
+      --tries=3 \
+      --waitretry=5 \
+      --connect-timeout=15 \
+      --read-timeout=30 \
+      --timeout=30 \
+      --retry-connrefused \
+      --progress=dot:giga \
+      -O "${tmp}" \
+      "${url}"; then
+      mv -f "${tmp}" "${dest}"
+      return 0
+    fi
+    echo "下载失败，准备尝试下一个地址：${url}" >&2
+    rm -f "${tmp}"
+  done
+
+  echo "所有镜像地址下载失败" >&2
+  return 1
+}
+
 echo "[3/8] 下载官方 Cloud Image..."
 if [ ! -f "${SRC_IMAGE}" ]; then
-  wget -O "${SRC_IMAGE}" "${IMAGE_URL}"
+  download_cloud_image "${SRC_IMAGE}" "${IMAGE_URL}" "${IMAGE_FALLBACK_URL}"
 else
   echo "原始镜像已存在，跳过下载：${SRC_IMAGE}"
 fi
