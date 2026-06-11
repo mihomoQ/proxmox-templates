@@ -253,6 +253,10 @@ APT::Install-Suggests \"false\";
 " \
   \
   --run-command "apt-get update" \
+  --install "cloud-guest-utils,e2fsprogs" \
+  --run-command "growpart /dev/sda 1 || true" \
+  --run-command "resize2fs '${ROOT_PARTITION}' || true" \
+  --run-command "df -h /" \
   --run-command "if [ '${APPLY_UPDATES}' = 'true' ]; then DEBIAN_FRONTEND=noninteractive apt-get -y full-upgrade; fi" \
   --install "${MINIMAL_PACKAGES}" \
   "${COMMON_INSTALL_ARGS[@]}" \
@@ -262,9 +266,6 @@ APT::Install-Suggests \"false\";
 GRUB_CMDLINE_LINUX=\"\${GRUB_CMDLINE_LINUX} net.ifnames=0 biosdevname=0\"
 " \
   --run-command "update-grub || true" \
-  \
-  --run-command "growpart /dev/sda 1 || true" \
-  --run-command "resize2fs '${ROOT_PARTITION}' || true" \
   \
   --run-command "sed -i 's|Types: deb deb-src|Types: deb|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true" \
   --run-command "sed -i 's|generate_mirrorlists: true|generate_mirrorlists: false|g' /etc/cloud/cloud.cfg.d/01_debian_cloud.cfg 2>/dev/null || true" \
