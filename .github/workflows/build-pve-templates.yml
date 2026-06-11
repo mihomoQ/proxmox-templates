@@ -1,0 +1,206 @@
+name: Build PVE Cloud Templates
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_profile:
+        description: "镜像档位：minimal 只含基础组件，common 加常用工具"
+        required: true
+        type: choice
+        options:
+          - minimal
+          - common
+        default: minimal
+      install_docker:
+        description: "是否安装 Docker CE 官方 APT 源版本"
+        required: true
+        type: boolean
+        default: false
+      install_speedtest:
+        description: "是否为 Debian 13 添加 Ookla 源并安装 Speedtest CLI"
+        required: true
+        type: boolean
+        default: false
+      enable_bbr:
+        description: "是否写入 SNTP 选项 2 TCP 窗口调优 / BBR 参数"
+        required: true
+        type: boolean
+        default: false
+      publish_release:
+        description: "是否发布到 GitHub Releases"
+        required: true
+        type: boolean
+        default: true
+      apply_updates:
+        description: "是否在构建时执行系统更新"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.image_id }} ${{ inputs.image_profile }}
+    # 固定 Ubuntu 22.04 runner，避免 ubuntu-latest 上 libguestfs/QEMU 网络栈变化影响构建。
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_id: debian12
+            artifact_name: debian-12-pve-cloud-template
+          - image_id: debian13
+            artifact_name: debian-13-pve-cloud-template
+          - image_id: ubuntu2204
+            artifact_name: ubuntu-22.04-pve-cloud-template
+          - image_id: ubuntu2404
+            artifact_name: ubuntu-24.04-pve-cloud-template
+          - image_id: ubuntu2604
+            artifact_name: ubuntu-26.04-pve-cloud-template
+
+    env:
+      IMAGE_ID: ${{ matrix.image_id }}
+      IMAGE_PROFILE: ${{ inputs.image_profile }}
+      WORKDIR: /tmp/pve-cloud-build/${{ matrix.image_id }}-${{ inputs.image_profile }}
+      INSTALL_DOCKER: ${{ inputs.install_docker }}
+      INSTALL_SPEEDTEST: ${{ inputs.install_speedtest }}
+      ENABLE_BBR: ${{ inputs.enable_bbr }}
+      IMAGE_DISK_SIZE: "4G"
+      ROOT_PARTITION: "/dev/sda1"
+      REMOVE_SNAPD: "true"
+      APPLY_UPDATES: ${{ inputs.apply_updates }}
+      CLEAN_DOCS: "true"
+      CONFIGURE_FASTFETCH: "true"
+      LIBGUESTFS_BACKEND: direct
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            libguestfs-tools \
+            qemu-utils \
+            wget \
+            curl \
+            ca-certificates
+
+      - name: Check libguestfs backend
+        run: |
+          echo "LIBGUESTFS_BACKEND=${LIBGUESTFS_BACKEND}"
+          sudo env LIBGUESTFS_BACKEND="${LIBGUESTFS_BACKEND}" libguestfs-test-tool
+
+      - name: Build image
+        run: |
+          chmod +x ./build-pve-cloud-image.sh
+          ./build-pve-cloud-image.sh
+
+      - name: Show output files
+        run: |
+          ls -lh "${WORKDIR}"
+          cat "${WORKDIR}"/*.sha256
+
+      - name: Collect release files
+        run: |
+          mkdir -p "${WORKDIR}/dist"
+          final_qcow2="$(find "${WORKDIR}" -maxdepth 1 -type f -name '*.qcow2' ! -name '*-src.qcow2' ! -name '*-work.qcow2' -print -quit)"
+          if [ -z "${final_qcow2}" ]; then
+            echo "::error::未找到最终 qcow2 镜像文件"
+            exit 1
+          fi
+          final_sha256="${final_qcow2}.sha256"
+          if [ ! -f "${final_sha256}" ]; then
+            echo "::error file=${final_qcow2}::未找到 SHA256 校验文件"
+            exit 1
+          fi
+          cp "${final_qcow2}" "${final_sha256}" "${WORKDIR}/dist/"
+          ls -lh "${WORKDIR}/dist"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact_name }}-${{ inputs.image_profile }}
+          path: |
+            ${{ env.WORKDIR }}/dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: ${{ inputs.publish_release }}
+    needs: build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Generate release metadata
+        id: meta
+        run: |
+          release_date="$(TZ=Asia/Shanghai date +'%Y.%m.%d')"
+          echo "release_date=${release_date}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=pve-cloud-${{ inputs.image_profile }}-${release_date}" >> "${GITHUB_OUTPUT}"
+          echo "release_name=PVE Cloud Templates ${{ inputs.image_profile }} ${release_date}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Show release files
+        run: |
+          find dist -maxdepth 1 -type f -print -exec ls -lh {} \;
+
+      - name: Check GitHub Release asset size limit
+        run: |
+          max_bytes=$((2 * 1024 * 1024 * 1024))
+          failed=0
+          for file in dist/*.qcow2; do
+            size="$(stat -c '%s' "${file}")"
+            if [ "${size}" -ge "${max_bytes}" ]; then
+              echo "::error file=${file}::GitHub Release 单个附件必须小于 2 GiB，当前文件大小为 ${size} bytes。"
+              failed=1
+            fi
+          done
+          exit "${failed}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.meta.outputs.release_tag }}
+          name: ${{ steps.meta.outputs.release_name }}
+          body: |
+            PVE Cloud Templates 自动构建版本。
+
+            构建日期：${{ steps.meta.outputs.release_date }}
+            镜像档位：${{ inputs.image_profile }}
+
+            包含镜像：
+            - Debian 12 genericcloud amd64
+            - Debian 13 genericcloud amd64
+            - Ubuntu 22.04 LTS cloudimg amd64
+            - Ubuntu 24.04 LTS cloudimg amd64
+            - Ubuntu 26.04 LTS cloudimg amd64
+
+            默认策略：
+            - 保留官方 cloud/virtual kernel
+            - 不内置默认 root 密码
+            - root 登录由 PVE cloud-init 注入的密码或 SSH key 决定
+            - minimal 只安装 PVE/cloud-init 基础组件
+            - common 额外安装常用排障和运维工具
+
+            可选功能：
+            - 安装 Docker CE：${{ inputs.install_docker }}
+            - Debian 13 安装 Speedtest CLI：${{ inputs.install_speedtest }}
+            - 启用 SNTP 选项 2 TCP 窗口调优 / BBR 参数：${{ inputs.enable_bbr }}
+            - 构建时应用系统更新：${{ inputs.apply_updates }}
+
+            安全提醒：镜像不包含默认密码。克隆 VM 时请通过 cloud-init 注入 SSH 公钥，或按需注入 root 密码。
+          files: |
+            dist/*.qcow2
+            dist/*.sha256
