@@ -81,7 +81,6 @@ jobs:
       INSTALL_DOCKER: ${{ inputs.install_docker }}
       INSTALL_SPEEDTEST: ${{ inputs.install_speedtest }}
       ENABLE_BBR: ${{ inputs.enable_bbr }}
-      IMAGE_DISK_SIZE: "4G"
       ROOT_PARTITION: "/dev/sda1"
       REMOVE_SNAPD: "true"
       APPLY_UPDATES: ${{ inputs.apply_updates }}

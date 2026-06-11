@@ -15,7 +15,7 @@ IMAGE_ID="${IMAGE_ID:-debian13}"
 IMAGE_PROFILE="${IMAGE_PROFILE:-minimal}"
 WORKDIR="${WORKDIR:-$HOME/pve-cloud-build/${IMAGE_ID}-${IMAGE_PROFILE}}"
 TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
-IMAGE_DISK_SIZE="${IMAGE_DISK_SIZE:-4G}"
+IMAGE_DISK_SIZE="${IMAGE_DISK_SIZE:-}"
 ROOT_PARTITION="${ROOT_PARTITION:-/dev/sda1}"
 
 INSTALL_DOCKER="${INSTALL_DOCKER:-true}"
@@ -79,6 +79,13 @@ case "${IMAGE_ID}" in
     exit 1
     ;;
 esac
+
+if [ -z "${IMAGE_DISK_SIZE}" ]; then
+  case "${IMAGE_ID}" in
+    ubuntu2604) IMAGE_DISK_SIZE="6G" ;;
+    *) IMAGE_DISK_SIZE="4G" ;;
+  esac
+fi
 
 SRC_IMAGE="${WORKDIR}/${IMAGE_NAME}-src.qcow2"
 WORK_IMAGE="${WORKDIR}/${IMAGE_NAME}-work.qcow2"

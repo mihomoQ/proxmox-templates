@@ -112,6 +112,8 @@ APPLY_UPDATES=true \
 
 `INSTALL_DOCKER`、`INSTALL_SPEEDTEST`、`ENABLE_BBR` 只在 `IMAGE_PROFILE=common` 时生效。
 
+`IMAGE_DISK_SIZE` 默认值为 `4G`；Ubuntu 26.04 默认使用 `6G`，用于给系统更新保留解包空间。最终镜像仍会经过 sparse 压缩。
+
 `ENABLE_BBR=true` 会写入 `/etc/sysctl.d/99-pve-tcp-tune.conf`。该配置启用 BBR 拥塞控制，并调整 TCP/UDP 缓冲区、窗口缩放和队列调度参数：
 
 ```text
