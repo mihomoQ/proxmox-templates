@@ -187,7 +187,7 @@ fi
 BBR_ARGS=()
 if [ "${EFFECTIVE_ENABLE_BBR}" = "true" ]; then
   BBR_ARGS+=(
-    --write "/etc/sysctl.d/99-pve-tcp-tune.conf:# SNTP toolsnew.sh option 2: TCP window tuning
+    --write "/etc/sysctl.d/99-pve-tcp-tune.conf:# PVE common profile TCP tuning
 net.ipv4.tcp_no_metrics_save=1
 net.ipv4.tcp_ecn=0
 net.ipv4.tcp_frto=0

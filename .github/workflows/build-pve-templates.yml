@@ -14,7 +14,7 @@ on:
         type: boolean
         default: true
       enable_bbr:
-        description: "common 档位是否写入 SNTP 选项 2 TCP 窗口调优 / BBR 参数"
+        description: "common 档位是否写入 TCP 调优和 BBR sysctl 配置"
         required: true
         type: boolean
         default: true
@@ -210,7 +210,7 @@ jobs:
             common 可选功能：
             - 安装 Docker CE：${{ inputs.install_docker }}
             - Debian 13 安装 Speedtest CLI：${{ inputs.install_speedtest }}
-            - 启用 SNTP 选项 2 TCP 窗口调优 / BBR 参数：${{ inputs.enable_bbr }}
+            - 启用 TCP 调优和 BBR sysctl 配置：${{ inputs.enable_bbr }}
             - 构建时应用系统更新：${{ inputs.apply_updates }}
 
             安全提醒：镜像不包含默认密码。克隆 VM 时请通过 cloud-init 注入 SSH 公钥，或按需注入 root 密码。

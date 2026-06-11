@@ -38,7 +38,7 @@ tcpdump lsof socat zip zstd bash-completion
 | --- | --- | --- |
 | `install_docker` | `true` | common 下添加 Docker 官方 APT 源并安装 Docker CE |
 | `install_speedtest` | `true` | common + Debian 13 下添加 Ookla 源并安装 `speedtest` |
-| `enable_bbr` | `true` | common 下写入 SNTP 脚本选项 2 的 TCP 窗口调优 / BBR 参数 |
+| `enable_bbr` | `true` | common 下写入 TCP 调优和 BBR sysctl 配置 |
 
 ## 安全策略
 
@@ -73,7 +73,7 @@ Fork 后进入 `Actions`，运行 `Build PVE Cloud Templates`。一次运行会�
 | --- | --- | --- |
 | `install_docker` | `true` | common 档位是否安装 Docker CE |
 | `install_speedtest` | `true` | common + Debian 13 是否安装 Speedtest CLI |
-| `enable_bbr` | `true` | common 档位是否启用 SNTP 脚本选项 2 的 TCP 窗口调优 / BBR 参数 |
+| `enable_bbr` | `true` | common 档位是否启用 TCP 调优和 BBR sysctl 配置 |
 | `publish_release` | `true` | 是否发布 GitHub Release |
 | `apply_updates` | `true` | 是否在构建时执行系统更新 |
 
@@ -110,7 +110,9 @@ APPLY_UPDATES=true \
 ./build-pve-cloud-image.sh
 ```
 
-`INSTALL_DOCKER`、`INSTALL_SPEEDTEST`、`ENABLE_BBR` 只在 `IMAGE_PROFILE=common` 时生效。`ENABLE_BBR=true` 会写入 `/etc/sysctl.d/99-pve-tcp-tune.conf`，参数对应 `toolsnew.sh` 的选项 2：
+`INSTALL_DOCKER`、`INSTALL_SPEEDTEST`、`ENABLE_BBR` 只在 `IMAGE_PROFILE=common` 时生效。
+
+`ENABLE_BBR=true` 会写入 `/etc/sysctl.d/99-pve-tcp-tune.conf`。该配置启用 BBR 拥塞控制，并调整 TCP/UDP 缓冲区、窗口缩放和队列调度参数：
 
 ```text
 net.ipv4.tcp_no_metrics_save=1
@@ -132,6 +134,8 @@ net.ipv4.udp_wmem_min=8192
 net.core.default_qdisc=fq_pie
 net.ipv4.tcp_congestion_control=bbr
 ```
+
+这组参数适合通用 KVM/VPS 场景，但并不是所有业务都一定需要。对延迟敏感、吞吐敏感或有明确网络基准要求的服务，建议基于实际压测结果调整或关闭。
 
 支持的 `IMAGE_ID`：
 
@@ -241,5 +245,6 @@ systemctl status qemu-guest-agent --no-pager
 - 默认保留官方 cloud/virtual kernel，不主动安装 `linux-image-amd64` / `linux-generic`。
 - 默认使用官方 cloud image，不从 ISO 安装，构建过程可复现。
 - `minimal` 默认不包含 Docker、Speedtest、TCP 窗口调优 / BBR；这些功能只在 `common` 中默认开启，并可手动关闭。
+- TCP 调优参数由镜像构建脚本写入固定的 sysctl 配置文件。
 - 默认清理 APT 缓存、cloud-init 状态、日志、文档和 man/info，最后用 `virt-sparsify --compress` 压缩 qcow2。
 - 默认禁用 `deb-src`，关闭 cloud-init 首次启动自动 package upgrade，减少首次启动不可控耗时。
