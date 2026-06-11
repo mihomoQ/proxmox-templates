@@ -6,7 +6,7 @@
 # - keep the official cloud image kernel
 # - do not bake a root password
 # - install only PVE/cloud-init essentials unless IMAGE_PROFILE=common
-# - make Docker, Speedtest and BBR explicit opt-in features
+# - enable Docker, Speedtest and TCP tuning by default only for common
 # ============================================================
 
 set -euo pipefail
@@ -18,9 +18,9 @@ TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
 IMAGE_DISK_SIZE="${IMAGE_DISK_SIZE:-4G}"
 ROOT_PARTITION="${ROOT_PARTITION:-/dev/sda1}"
 
-INSTALL_DOCKER="${INSTALL_DOCKER:-false}"
-INSTALL_SPEEDTEST="${INSTALL_SPEEDTEST:-false}"
-ENABLE_BBR="${ENABLE_BBR:-false}"
+INSTALL_DOCKER="${INSTALL_DOCKER:-true}"
+INSTALL_SPEEDTEST="${INSTALL_SPEEDTEST:-true}"
+ENABLE_BBR="${ENABLE_BBR:-true}"
 APPLY_UPDATES="${APPLY_UPDATES:-true}"
 REMOVE_SNAPD="${REMOVE_SNAPD:-true}"
 CLEAN_DOCS="${CLEAN_DOCS:-true}"
@@ -87,6 +87,16 @@ FINAL_IMAGE="${FINAL_IMAGE:-${WORKDIR}/${IMAGE_NAME}.qcow2}"
 MINIMAL_PACKAGES="sudo,openssh-server,cloud-init,qemu-guest-agent,cloud-guest-utils,e2fsprogs,ca-certificates,curl,wget,unzip,less,nano,iproute2,iputils-ping"
 COMMON_PACKAGES="btop,chrony,git,vim,jq,rsync,dnsutils,mtr-tiny,traceroute,tcpdump,lsof,socat,zip,zstd,bash-completion"
 
+if [ "${IMAGE_PROFILE}" = "common" ]; then
+  EFFECTIVE_INSTALL_DOCKER="${INSTALL_DOCKER}"
+  EFFECTIVE_INSTALL_SPEEDTEST="${INSTALL_SPEEDTEST}"
+  EFFECTIVE_ENABLE_BBR="${ENABLE_BBR}"
+else
+  EFFECTIVE_INSTALL_DOCKER="false"
+  EFFECTIVE_INSTALL_SPEEDTEST="false"
+  EFFECTIVE_ENABLE_BBR="false"
+fi
+
 echo "============================================================"
 echo "开始定制 PVE Cloud Image"
 echo "镜像 ID：${IMAGE_ID}"
@@ -99,9 +109,9 @@ echo "时区：${TIMEZONE}"
 echo "虚拟磁盘：${IMAGE_DISK_SIZE}"
 echo "根分区：${ROOT_PARTITION}"
 echo "保留 cloud kernel：true"
-echo "安装 Docker：${INSTALL_DOCKER}"
-echo "安装 Speedtest CLI：${INSTALL_SPEEDTEST}"
-echo "启用 BBR：${ENABLE_BBR}"
+echo "安装 Docker：${EFFECTIVE_INSTALL_DOCKER} (请求值：${INSTALL_DOCKER})"
+echo "安装 Speedtest CLI：${EFFECTIVE_INSTALL_SPEEDTEST} (请求值：${INSTALL_SPEEDTEST})"
+echo "启用 TCP 窗口调优 / BBR：${EFFECTIVE_ENABLE_BBR} (请求值：${ENABLE_BBR})"
 echo "应用系统更新：${APPLY_UPDATES}"
 echo "移除 snapd：${REMOVE_SNAPD}"
 echo "清理文档缓存：${CLEAN_DOCS}"
@@ -149,7 +159,7 @@ if [ "${IMAGE_PROFILE}" = "common" ]; then
 fi
 
 DOCKER_INSTALL_ARGS=()
-if [ "${INSTALL_DOCKER}" = "true" ]; then
+if [ "${EFFECTIVE_INSTALL_DOCKER}" = "true" ]; then
   DOCKER_INSTALL_ARGS+=(
     --run-command "install -m 0755 -d /etc/apt/keyrings"
     --run-command "curl -fsSL https://download.docker.com/linux/${DOCKER_OS}/gpg -o /etc/apt/keyrings/docker.asc"
@@ -161,7 +171,7 @@ if [ "${INSTALL_DOCKER}" = "true" ]; then
 fi
 
 SPEEDTEST_INSTALL_ARGS=()
-if [ "${INSTALL_SPEEDTEST}" = "true" ] && [ "${IMAGE_ID}" = "debian13" ]; then
+if [ "${EFFECTIVE_INSTALL_SPEEDTEST}" = "true" ] && [ "${IMAGE_ID}" = "debian13" ]; then
   SPEEDTEST_INSTALL_ARGS+=(
     --run-command "install -m 0755 -d /etc/apt/keyrings"
     --run-command "curl -fsSL https://packagecloud.io/ookla/speedtest-cli/gpgkey -o /etc/apt/keyrings/ookla-speedtest.asc"
@@ -170,12 +180,12 @@ if [ "${INSTALL_SPEEDTEST}" = "true" ] && [ "${IMAGE_ID}" = "debian13" ]; then
     --run-command "apt-get update"
     --run-command "DEBIAN_FRONTEND=noninteractive apt-get install -y speedtest"
   )
-elif [ "${INSTALL_SPEEDTEST}" = "true" ]; then
+elif [ "${EFFECTIVE_INSTALL_SPEEDTEST}" = "true" ]; then
   echo "Speedtest CLI 目前只在 debian13 镜像中安装，其它 IMAGE_ID 跳过。"
 fi
 
 BBR_ARGS=()
-if [ "${ENABLE_BBR}" = "true" ]; then
+if [ "${EFFECTIVE_ENABLE_BBR}" = "true" ]; then
   BBR_ARGS+=(
     --write "/etc/sysctl.d/99-pve-tcp-tune.conf:# SNTP toolsnew.sh option 2: TCP window tuning
 net.ipv4.tcp_no_metrics_save=1
@@ -352,7 +362,7 @@ WantedBy=multi-user.target
   "${FASTFETCH_ARGS[@]}" \
   \
   --run-command "if [ '${REMOVE_SNAPD}' = 'true' ]; then DEBIAN_FRONTEND=noninteractive apt-get -y purge snapd packagekit packagekit-tools || true; rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd; fi" \
-  --run-command "if [ '${INSTALL_DOCKER}' = 'true' ]; then systemctl enable docker || true; fi" \
+  --run-command "if [ '${EFFECTIVE_INSTALL_DOCKER}' = 'true' ]; then systemctl enable docker || true; fi" \
   --run-command "systemctl enable ssh || systemctl enable sshd || true" \
   --run-command "systemctl enable qemu-guest-agent || true" \
   --run-command "systemctl enable serial-getty@ttyS0.service || true" \
@@ -392,8 +402,8 @@ echo "镜像档位：${IMAGE_PROFILE}"
 echo "最终镜像路径：${FINAL_IMAGE}"
 echo "默认 root 密码：未设置，使用 PVE cloud-init 注入"
 echo "SSH 策略：有 root SSH key 时禁用密码；无 key 且注入 root 密码时允许密码"
-echo "Docker：${INSTALL_DOCKER}"
-echo "Speedtest CLI：${INSTALL_SPEEDTEST}"
-echo "BBR：${ENABLE_BBR}"
+echo "Docker：${EFFECTIVE_INSTALL_DOCKER}"
+echo "Speedtest CLI：${EFFECTIVE_INSTALL_SPEEDTEST}"
+echo "TCP 窗口调优 / BBR：${EFFECTIVE_ENABLE_BBR}"
 echo "SHA256：${FINAL_IMAGE}.sha256"
 echo "============================================================"

@@ -5,7 +5,7 @@
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20%7C%2026.04-E95420)
 ![Kernel](https://img.shields.io/badge/kernel-cloud%2Fvirtual-2F855A)
 
-面向 Proxmox VE 的轻量 Cloud Image 构建仓库。默认基于官方 Debian `genericcloud` / Ubuntu `cloudimg`，保留官方 cloud/virtual kernel，不预置 root 密码，只安装 PVE 必要组件。Docker、Speedtest、BBR 调优都作为显式开关，不默认塞进镜像。
+面向 Proxmox VE 的轻量 Cloud Image 构建仓库。默认基于官方 Debian `genericcloud` / Ubuntu `cloudimg`，保留官方 cloud/virtual kernel，不预置 root 密码。`minimal` 永远只安装 PVE 必要组件；`common` 默认安装常用工具，并默认启用 Docker、Speedtest、TCP 窗口调优 / BBR，可在 Action 中关闭。
 
 标签：`proxmox`、`pve`、`cloud-init`、`debian-genericcloud`、`ubuntu-cloudimg`、`qemu-guest-agent`、`qcow2`、`minimal-image`
 
@@ -32,13 +32,13 @@ tcpdump lsof socat zip zstd bash-completion
 
 `fastfetch` 会在目标发行版仓库可用时自动安装，并写入 root 的默认配置；Debian 13 可用。
 
-可选功能默认关闭：
+可选功能只在 `common` 档位生效，`minimal` 会忽略这些开关并保持极简：
 
 | 开关 | 默认 | 说明 |
 | --- | --- | --- |
-| `install_docker` | `false` | 添加 Docker 官方 APT 源并安装 Docker CE |
-| `install_speedtest` | `false` | Debian 13 下添加 Ookla 源并安装 `speedtest` |
-| `enable_bbr` | `false` | 写入 SNTP 脚本选项 2 的 TCP 窗口调优 / BBR 参数 |
+| `install_docker` | `true` | common 下添加 Docker 官方 APT 源并安装 Docker CE |
+| `install_speedtest` | `true` | common + Debian 13 下添加 Ookla 源并安装 `speedtest` |
+| `enable_bbr` | `true` | common 下写入 SNTP 脚本选项 2 的 TCP 窗口调优 / BBR 参数 |
 
 ## 安全策略
 
@@ -55,7 +55,7 @@ tcpdump lsof socat zip zstd bash-completion
 
 ## 支持镜像
 
-每次 GitHub Actions 会按所选档位构建 5 个 amd64 镜像：
+每次 GitHub Actions 会同时构建 `minimal` 和 `common` 两档，共 10 个 amd64 镜像：
 
 | 系统 | `minimal` 文件名 | `common` 文件名 |
 | --- | --- | --- |
@@ -67,22 +67,20 @@ tcpdump lsof socat zip zstd bash-completion
 
 ## GitHub Actions 构建
 
-Fork 后进入 `Actions`，运行 `Build PVE Cloud Templates`。
+Fork 后进入 `Actions`，运行 `Build PVE Cloud Templates`。一次运行会构建全部 5 个系统的 `minimal` 和 `common` 镜像。
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `image_profile` | `minimal` | 选择 `minimal` 或 `common` |
-| `install_docker` | `false` | 是否安装 Docker CE |
-| `install_speedtest` | `false` | 是否为 Debian 13 安装 Speedtest CLI |
-| `enable_bbr` | `false` | 是否启用 SNTP 脚本选项 2 的 TCP 窗口调优 / BBR 参数 |
+| `install_docker` | `true` | common 档位是否安装 Docker CE |
+| `install_speedtest` | `true` | common + Debian 13 是否安装 Speedtest CLI |
+| `enable_bbr` | `true` | common 档位是否启用 SNTP 脚本选项 2 的 TCP 窗口调优 / BBR 参数 |
 | `publish_release` | `true` | 是否发布 GitHub Release |
 | `apply_updates` | `true` | 是否在构建时执行系统更新 |
 
 Release 标签格式：
 
 ```text
-pve-cloud-minimal-YYYY.MM.DD
-pve-cloud-common-YYYY.MM.DD
+pve-cloud-templates-YYYY.MM.DD
 ```
 
 工作流固定使用 `ubuntu-22.04` runner，避免 `ubuntu-latest` 上 libguestfs/QEMU 行为变化影响构建。构建产物只上传最终 `.qcow2` 和 `.qcow2.sha256`。
@@ -105,14 +103,14 @@ IMAGE_ID=debian13 \
 IMAGE_PROFILE=common \
 WORKDIR=/tmp/pve-cloud-build/debian13-common \
 IMAGE_DISK_SIZE=4G \
-INSTALL_DOCKER=false \
-INSTALL_SPEEDTEST=false \
-ENABLE_BBR=false \
+INSTALL_DOCKER=true \
+INSTALL_SPEEDTEST=true \
+ENABLE_BBR=true \
 APPLY_UPDATES=true \
 ./build-pve-cloud-image.sh
 ```
 
-`ENABLE_BBR=true` 会写入 `/etc/sysctl.d/99-pve-tcp-tune.conf`，参数对应 `toolsnew.sh` 的选项 2：
+`INSTALL_DOCKER`、`INSTALL_SPEEDTEST`、`ENABLE_BBR` 只在 `IMAGE_PROFILE=common` 时生效。`ENABLE_BBR=true` 会写入 `/etc/sysctl.d/99-pve-tcp-tune.conf`，参数对应 `toolsnew.sh` 的选项 2：
 
 ```text
 net.ipv4.tcp_no_metrics_save=1
@@ -151,9 +149,9 @@ PROFILE="minimal"
 RELEASE_TAG="${RELEASE_TAG:-}"
 
 if [ -z "${RELEASE_TAG}" ]; then
-  RELEASE_TAG="$(wget -qO- "https://api.github.com/repos/${REPO}/releases" | sed -n "s/.*\"tag_name\": *\"\(pve-cloud-${PROFILE}-[^\"]*\)\".*/\1/p" | head -n1)"
+  RELEASE_TAG="$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
 fi
-[ -n "${RELEASE_TAG}" ] || { echo "无法获取 ${PROFILE} 最新 Release 标签"; exit 1; }
+[ -n "${RELEASE_TAG}" ] || { echo "无法获取最新 Release 标签"; exit 1; }
 
 BASE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
 VMID=9013
@@ -242,6 +240,6 @@ systemctl status qemu-guest-agent --no-pager
 
 - 默认保留官方 cloud/virtual kernel，不主动安装 `linux-image-amd64` / `linux-generic`。
 - 默认使用官方 cloud image，不从 ISO 安装，构建过程可复现。
-- 默认关闭 Docker、Speedtest、TCP 窗口调优 / BBR，避免把业务环境假设写死进基础模板。
+- `minimal` 默认不包含 Docker、Speedtest、TCP 窗口调优 / BBR；这些功能只在 `common` 中默认开启，并可手动关闭。
 - 默认清理 APT 缓存、cloud-init 状态、日志、文档和 man/info，最后用 `virt-sparsify --compress` 压缩 qcow2。
 - 默认禁用 `deb-src`，关闭 cloud-init 首次启动自动 package upgrade，减少首次启动不可控耗时。

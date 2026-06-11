@@ -3,29 +3,21 @@ name: Build PVE Cloud Templates
 on:
   workflow_dispatch:
     inputs:
-      image_profile:
-        description: "镜像档位：minimal 只含基础组件，common 加常用工具"
-        required: true
-        type: choice
-        options:
-          - minimal
-          - common
-        default: minimal
       install_docker:
-        description: "是否安装 Docker CE 官方 APT 源版本"
+        description: "common 档位是否安装 Docker CE 官方 APT 源版本"
         required: true
         type: boolean
-        default: false
+        default: true
       install_speedtest:
-        description: "是否为 Debian 13 添加 Ookla 源并安装 Speedtest CLI"
+        description: "common + Debian 13 是否添加 Ookla 源并安装 Speedtest CLI"
         required: true
         type: boolean
-        default: false
+        default: true
       enable_bbr:
-        description: "是否写入 SNTP 选项 2 TCP 窗口调优 / BBR 参数"
+        description: "common 档位是否写入 SNTP 选项 2 TCP 窗口调优 / BBR 参数"
         required: true
         type: boolean
-        default: false
+        default: true
       publish_release:
         description: "是否发布到 GitHub Releases"
         required: true
@@ -42,7 +34,7 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.image_id }} ${{ inputs.image_profile }}
+    name: Build ${{ matrix.image_id }} ${{ matrix.image_profile }}
     # 固定 Ubuntu 22.04 runner，避免 ubuntu-latest 上 libguestfs/QEMU 网络栈变化影响构建。
     runs-on: ubuntu-22.04
     timeout-minutes: 120
@@ -52,20 +44,40 @@ jobs:
       matrix:
         include:
           - image_id: debian12
+            image_profile: minimal
             artifact_name: debian-12-pve-cloud-template
           - image_id: debian13
+            image_profile: minimal
             artifact_name: debian-13-pve-cloud-template
           - image_id: ubuntu2204
+            image_profile: minimal
             artifact_name: ubuntu-22.04-pve-cloud-template
           - image_id: ubuntu2404
+            image_profile: minimal
             artifact_name: ubuntu-24.04-pve-cloud-template
           - image_id: ubuntu2604
+            image_profile: minimal
+            artifact_name: ubuntu-26.04-pve-cloud-template
+          - image_id: debian12
+            image_profile: common
+            artifact_name: debian-12-pve-cloud-template
+          - image_id: debian13
+            image_profile: common
+            artifact_name: debian-13-pve-cloud-template
+          - image_id: ubuntu2204
+            image_profile: common
+            artifact_name: ubuntu-22.04-pve-cloud-template
+          - image_id: ubuntu2404
+            image_profile: common
+            artifact_name: ubuntu-24.04-pve-cloud-template
+          - image_id: ubuntu2604
+            image_profile: common
             artifact_name: ubuntu-26.04-pve-cloud-template
 
     env:
       IMAGE_ID: ${{ matrix.image_id }}
-      IMAGE_PROFILE: ${{ inputs.image_profile }}
-      WORKDIR: /tmp/pve-cloud-build/${{ matrix.image_id }}-${{ inputs.image_profile }}
+      IMAGE_PROFILE: ${{ matrix.image_profile }}
+      WORKDIR: /tmp/pve-cloud-build/${{ matrix.image_id }}-${{ matrix.image_profile }}
       INSTALL_DOCKER: ${{ inputs.install_docker }}
       INSTALL_SPEEDTEST: ${{ inputs.install_speedtest }}
       ENABLE_BBR: ${{ inputs.enable_bbr }}
@@ -125,7 +137,7 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ matrix.artifact_name }}-${{ inputs.image_profile }}
+          name: ${{ matrix.artifact_name }}-${{ matrix.image_profile }}
           path: |
             ${{ env.WORKDIR }}/dist/*
           if-no-files-found: error
@@ -143,8 +155,8 @@ jobs:
         run: |
           release_date="$(TZ=Asia/Shanghai date +'%Y.%m.%d')"
           echo "release_date=${release_date}" >> "${GITHUB_OUTPUT}"
-          echo "release_tag=pve-cloud-${{ inputs.image_profile }}-${release_date}" >> "${GITHUB_OUTPUT}"
-          echo "release_name=PVE Cloud Templates ${{ inputs.image_profile }} ${release_date}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=pve-cloud-templates-${release_date}" >> "${GITHUB_OUTPUT}"
+          echo "release_name=PVE Cloud Templates ${release_date}" >> "${GITHUB_OUTPUT}"
 
       - name: Download artifacts
         uses: actions/download-artifact@v5
@@ -178,14 +190,14 @@ jobs:
             PVE Cloud Templates 自动构建版本。
 
             构建日期：${{ steps.meta.outputs.release_date }}
-            镜像档位：${{ inputs.image_profile }}
+            镜像档位：minimal + common
 
             包含镜像：
-            - Debian 12 genericcloud amd64
-            - Debian 13 genericcloud amd64
-            - Ubuntu 22.04 LTS cloudimg amd64
-            - Ubuntu 24.04 LTS cloudimg amd64
-            - Ubuntu 26.04 LTS cloudimg amd64
+            - Debian 12 genericcloud amd64 minimal/common
+            - Debian 13 genericcloud amd64 minimal/common
+            - Ubuntu 22.04 LTS cloudimg amd64 minimal/common
+            - Ubuntu 24.04 LTS cloudimg amd64 minimal/common
+            - Ubuntu 26.04 LTS cloudimg amd64 minimal/common
 
             默认策略：
             - 保留官方 cloud/virtual kernel
@@ -193,8 +205,9 @@ jobs:
             - root 登录由 PVE cloud-init 注入的密码或 SSH key 决定
             - minimal 只安装 PVE/cloud-init 基础组件
             - common 额外安装常用排障和运维工具
+            - Docker、Speedtest、TCP 窗口调优 / BBR 只在 common 档位生效
 
-            可选功能：
+            common 可选功能：
             - 安装 Docker CE：${{ inputs.install_docker }}
             - Debian 13 安装 Speedtest CLI：${{ inputs.install_speedtest }}
             - 启用 SNTP 选项 2 TCP 窗口调优 / BBR 参数：${{ inputs.enable_bbr }}
