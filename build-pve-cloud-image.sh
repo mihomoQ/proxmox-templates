@@ -351,7 +351,7 @@ GRUB_CMDLINE_LINUX=\"\${GRUB_CMDLINE_LINUX} net.ifnames=0 biosdevname=0\"
   --run-command "sed -i 's|Types: deb deb-src|Types: deb|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true" \
   --run-command "sed -i 's|generate_mirrorlists: true|generate_mirrorlists: false|g' /etc/cloud/cloud.cfg.d/01_debian_cloud.cfg 2>/dev/null || true" \
   --write "/etc/cloud/cloud.cfg.d/99-pve-template.cfg:disable_root: false
-ssh_pwauth: false
+ssh_pwauth: true
 package_update: false
 package_upgrade: false
 package_reboot_if_required: false
@@ -359,84 +359,9 @@ chpasswd:
   expire: false
 " \
   \
-  --write "/etc/ssh/sshd_config.d/99-pve-auth-mode.conf:PermitRootLogin prohibit-password
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-PubkeyAuthentication yes
-UsePAM yes
-" \
-  --write "/usr/local/sbin/pve-cloud-auth-mode:#!/bin/sh
-set -eu
-
-conf=/etc/ssh/sshd_config.d/99-pve-auth-mode.conf
-done_file=/var/lib/pve-cloud-auth-mode.done
-mkdir -p /etc/ssh/sshd_config.d /var/lib
-
-root_hash=\"\$(getent shadow root | cut -d: -f2 || true)\"
-has_password=0
-unlock_root=0
-if [ -n \"\${root_hash}\" ] && [ \"\${root_hash}\" != \"*\" ] && [ \"\${root_hash}\" != \"!\" ] && [ \"\${root_hash}\" != \"!!\" ] && [ \"\${root_hash#\\!}\" = \"\${root_hash}\" ]; then
-  has_password=1
-elif [ -n \"\${root_hash}\" ] && [ \"\${root_hash#\\!}\" != \"\${root_hash}\" ]; then
-  stripped_hash=\"\${root_hash#\\!}\"
-  if [ -n \"\${stripped_hash}\" ] && [ \"\${stripped_hash}\" != \"*\" ] && [ \"\${stripped_hash}\" != \"!\" ]; then
-    has_password=1
-    unlock_root=1
-  fi
-fi
-
-has_key=0
-if [ -s /root/.ssh/authorized_keys ] && grep -Eq '(ssh-rsa|ssh-ed25519|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)' /root/.ssh/authorized_keys; then
-  has_key=1
-fi
-
-if [ \"\${has_key}\" = \"1\" ]; then
-  cat > \"\${conf}\" <<'EOF'
-PermitRootLogin prohibit-password
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-PubkeyAuthentication yes
-UsePAM yes
-EOF
-elif [ \"\${has_password}\" = \"1\" ]; then
-  if [ \"\${unlock_root}\" = \"1\" ]; then
-    passwd -u root >/dev/null 2>&1 || usermod -U root >/dev/null 2>&1 || true
-  fi
-  cat > \"\${conf}\" <<'EOF'
-PermitRootLogin yes
-PasswordAuthentication yes
-KbdInteractiveAuthentication yes
-PubkeyAuthentication yes
-UsePAM yes
-EOF
-else
-  cat > \"\${conf}\" <<'EOF'
-PermitRootLogin prohibit-password
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-PubkeyAuthentication yes
-UsePAM yes
-EOF
-fi
-
-systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
-touch \"\${done_file}\"
-" \
-  --chmod 0755:/usr/local/sbin/pve-cloud-auth-mode \
-  --write "/etc/systemd/system/pve-cloud-auth-mode.service:[Unit]
-Description=Set SSH authentication mode from cloud-init root credentials
-After=cloud-final.service ssh.service sshd.service
-Wants=cloud-final.service
-ConditionPathExists=!/var/lib/pve-cloud-auth-mode.done
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/pve-cloud-auth-mode
-
-[Install]
-WantedBy=multi-user.target
-" \
-  --run-command "systemctl enable pve-cloud-auth-mode.service || true" \
+  --run-command "test -f /etc/ssh/sshd_config || touch /etc/ssh/sshd_config" \
+  --run-command "sed -i -E '/^[[:space:]]*#?[[:space:]]*(PermitRootLogin|PasswordAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication|PubkeyAuthentication|UsePAM)[[:space:]]/d' /etc/ssh/sshd_config" \
+  --run-command "tmp=\"\$(mktemp)\"; { printf '%s\n' '# PVE cloud-init root login policy' 'PermitRootLogin yes' 'PasswordAuthentication yes' 'KbdInteractiveAuthentication yes' 'PubkeyAuthentication yes' 'UsePAM yes' ''; cat /etc/ssh/sshd_config; } > \"\${tmp}\"; cat \"\${tmp}\" > /etc/ssh/sshd_config; rm -f \"\${tmp}\"" \
   \
   "${BBR_ARGS[@]}" \
   "${DOCKER_INSTALL_ARGS[@]}" \
@@ -483,7 +408,7 @@ echo "镜像 ID：${IMAGE_ID}"
 echo "镜像档位：${IMAGE_PROFILE}"
 echo "最终镜像路径：${FINAL_IMAGE}"
 echo "默认 root 密码：未设置，使用 PVE cloud-init 注入"
-echo "SSH 策略：有 root SSH key 时禁用密码；无 key 且注入 root 密码时允许密码"
+echo "SSH 策略：允许 root 密钥登录和 root 密码登录，凭据由 PVE cloud-init 注入"
 echo "Docker：${EFFECTIVE_INSTALL_DOCKER}"
 echo "Speedtest CLI：${EFFECTIVE_INSTALL_SPEEDTEST}"
 echo "TCP 窗口调优 / BBR：${EFFECTIVE_ENABLE_BBR}"

@@ -42,16 +42,16 @@ tcpdump lsof socat zip zstd bash-completion
 
 ## 安全策略
 
-镜像不内置默认 root 密码。克隆 VM 时通过 PVE cloud-init 注入登录方式：
+镜像不内置默认 root 密码。克隆 VM 时通过 PVE cloud-init 注入 root 密码和/或 SSH key：
 
 | 注入内容 | SSH 策略 |
 | --- | --- |
 | 只有 root 密码 | 允许 root 密码登录 |
-| 有 SSH key | 禁用密码登录，只允许密钥 |
-| SSH key 和 root 密码都有 | 禁用密码登录，只允许密钥 |
-| 都没有 | 禁止远程登录，只能控制台处理 |
+| 只有 SSH key | 允许 root 密钥登录 |
+| SSH key 和 root 密码都有 | 密钥登录和密码登录都允许 |
+| 都没有 | 没有可用远程凭据，只能控制台处理 |
 
-实现方式：镜像内置一次性 `pve-cloud-auth-mode.service`，在 `cloud-final.service` 后检查 `/root/.ssh/authorized_keys` 和 root 密码状态，然后写入 SSH 配置。
+实现方式：构建时直接在 `/etc/ssh/sshd_config` 开头写入 `PermitRootLogin yes`、`PasswordAuthentication yes`、`KbdInteractiveAuthentication yes` 和 `PubkeyAuthentication yes`。生产环境或公网暴露的 VM 建议首次登录后按实际需要收紧 SSH 策略。
 
 ## 支持镜像
 
@@ -236,7 +236,7 @@ qm set 102 --cipassword "请改成强密码"
 qm start 102
 ```
 
-如果同时设置 `--sshkeys` 和 `--cipassword`，镜像首次启动后会禁用 SSH 密码登录，只允许密钥。
+如果同时设置 `--sshkeys` 和 `--cipassword`，密钥登录和密码登录都会可用。
 
 查看 IP：
 
