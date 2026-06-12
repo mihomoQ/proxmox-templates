@@ -71,7 +71,7 @@ Fork 后进入 `Actions`，手动运行 `Build PVE Cloud Templates`。仓库默�
 
 构建流程：
 
-1. `prepare-source` 串行下载 5 个官方源镜像，并上传为短期 artifact。
+1. `prepare-source` 以 2 个并发下载 5 个官方源镜像，并上传为短期 artifact。
 2. `build` 复用源镜像 artifact 并行构建 10 个 `minimal` / `common` 模板，避免重复请求官方 cloud image 源。
 3. `release` 只下载最终模板 artifact，发布 `.qcow2` 和 `.qcow2.sha256`。
 
