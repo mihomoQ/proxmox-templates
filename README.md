@@ -71,9 +71,16 @@ Fork 后进入 `Actions`，手动运行 `Build PVE Cloud Templates`。仓库默�
 
 构建流程：
 
-1. `prepare-source` 下载 5 个官方源镜像，并上传为短期 artifact。
+1. `prepare-source` 下载 5 个源镜像，并上传为短期 artifact。
 2. `build` 复用源镜像 artifact 并行构建 10 个 `minimal` / `common` 模板，避免重复请求官方 cloud image 源。
 3. `release` 只下载最终模板 artifact，发布 `.qcow2` 和 `.qcow2.sha256`。
+
+源镜像下载采用官方源优先、镜像源 fallback 的顺序。每个源默认重试 3 次，失败后切换下一个源，避免单个上游源限流或连接重置导致整批构建失败。
+
+| 系统 | 默认下载源 |
+| --- | --- |
+| Debian 12 / 13 | `cloud.debian.org` -> `mirror.sjtu.edu.cn/debian-cdimage` |
+| Ubuntu 22.04 / 24.04 / 26.04 | `cloud-images.ubuntu.com` -> `mirrors.tuna.tsinghua.edu.cn/ubuntu-cloud-images` -> `mirror.sjtu.edu.cn/ubuntu-cloud-images` |
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -109,6 +116,7 @@ IMAGE_ID=debian13 \
 IMAGE_PROFILE=common \
 WORKDIR=/tmp/pve-cloud-build/debian13-common \
 IMAGE_DISK_SIZE=4G \
+DOWNLOAD_TRIES=3 \
 INSTALL_DOCKER=true \
 INSTALL_SPEEDTEST=true \
 ENABLE_BBR=true \
@@ -119,6 +127,8 @@ APPLY_UPDATES=true \
 `INSTALL_DOCKER`、`INSTALL_SPEEDTEST`、`ENABLE_BBR` 只在 `IMAGE_PROFILE=common` 时生效。
 
 `IMAGE_DISK_SIZE` 默认值为 `4G`；Ubuntu 26.04 默认使用 `6G`，用于给系统更新保留解包空间。最终镜像仍会经过 sparse 压缩。
+
+`DOWNLOAD_TRIES`、`DOWNLOAD_WAIT_RETRY`、`DOWNLOAD_CONNECT_TIMEOUT`、`DOWNLOAD_READ_TIMEOUT`、`DOWNLOAD_TIMEOUT` 可用于调整每个镜像源的下载重试和超时。
 
 `ENABLE_BBR=true` 会写入 `/etc/sysctl.d/99-pve-tcp-tune.conf`。该配置启用 BBR 拥塞控制，并调整 TCP/UDP 缓冲区、窗口缩放和队列调度参数：
 
@@ -216,6 +226,83 @@ qm config "${VMID}"
 
 查看 `unused0` 对应磁盘名后再挂载到 `scsi0`。
 
+## PVE 定时同步模板
+
+仓库提供 `scripts/pve-cloud-template-sync.sh`，可以放到 PVE 节点上定时拉取最新 Release、校验 SHA256，并导入为模板。脚本默认不会覆盖已有 VMID；定时更新时需要显式设置 `REPLACE_EXISTING=true`。
+
+安装脚本：
+
+```bash
+install -m 0755 scripts/pve-cloud-template-sync.sh /usr/local/sbin/pve-cloud-template-sync
+```
+
+如果 PVE 节点没有 clone 本仓库，也可以直接从 GitHub 下载：
+
+```bash
+wget -O /usr/local/sbin/pve-cloud-template-sync \
+  https://raw.githubusercontent.com/mihomoQ/proxmox-templates/main/scripts/pve-cloud-template-sync.sh
+chmod +x /usr/local/sbin/pve-cloud-template-sync
+```
+
+手动同步 Debian 13 `minimal` 到 VMID `9013`：
+
+```bash
+IMAGE_ID=debian13 \
+IMAGE_PROFILE=minimal \
+VMID=9013 \
+STORAGE=local-lvm \
+REPLACE_EXISTING=true \
+/usr/local/sbin/pve-cloud-template-sync
+```
+
+常用变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `REPO` | `mihomoQ/proxmox-templates` | Release 所在仓库 |
+| `RELEASE_TAG` | `latest` | 使用最新 Release，也可固定为某个标签 |
+| `IMAGE_ID` | `debian13` | 支持的系统 ID |
+| `IMAGE_PROFILE` | `minimal` | `minimal` 或 `common` |
+| `VMID` | `9013` | 模板 VMID |
+| `STORAGE` | 自动识别 | PVE 镜像存储名 |
+| `REPLACE_EXISTING` | `false` | 是否销毁并重建同 VMID 模板 |
+
+systemd 每天凌晨 04:20 自动同步示例：
+
+```bash
+cat >/etc/systemd/system/pve-cloud-template-sync.service <<'EOF'
+[Unit]
+Description=Sync PVE cloud template from GitHub Release
+
+[Service]
+Type=oneshot
+Environment=IMAGE_ID=debian13
+Environment=IMAGE_PROFILE=minimal
+Environment=VMID=9013
+Environment=STORAGE=local-lvm
+Environment=REPLACE_EXISTING=true
+ExecStart=/usr/local/sbin/pve-cloud-template-sync
+EOF
+
+cat >/etc/systemd/system/pve-cloud-template-sync.timer <<'EOF'
+[Unit]
+Description=Daily PVE cloud template sync
+
+[Timer]
+OnCalendar=*-*-* 04:20:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now pve-cloud-template-sync.timer
+```
+
+脚本会记录 Release 标签和镜像 SHA256；如果模板已经是当前版本，会直接退出，不会重复导入。
+
 ## 克隆 VM
 
 密钥登录，推荐：
@@ -253,7 +340,7 @@ systemctl status qemu-guest-agent --no-pager
 ## 设计取舍
 
 - 默认保留官方 cloud/virtual kernel，不主动安装 `linux-image-amd64` / `linux-generic`。
-- 默认使用官方 cloud image，不从 ISO 安装，构建过程可复现。
+- 默认使用官方 cloud image，不从 ISO 安装；下载时官方源优先，失败后切换到已验证的镜像源。
 - GitHub Actions 会复用每个系统的源镜像 artifact，避免 `minimal` 和 `common` 重复下载同一个上游镜像。
 - `minimal` 默认不包含 Docker、Speedtest、TCP 窗口调优 / BBR；Docker 和 TCP 调优只在 `common` 中默认开启，Speedtest 只在 Debian 13 `common` 中默认开启，均可手动关闭。
 - TCP 调优参数由镜像构建脚本写入固定的 sysctl 配置文件。

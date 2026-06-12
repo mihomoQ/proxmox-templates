@@ -20,6 +20,11 @@ ROOT_PARTITION="${ROOT_PARTITION:-/dev/sda1}"
 
 INSTALL_HOST_TOOLS="${INSTALL_HOST_TOOLS:-true}"
 DOWNLOAD_ONLY="${DOWNLOAD_ONLY:-false}"
+DOWNLOAD_TRIES="${DOWNLOAD_TRIES:-3}"
+DOWNLOAD_WAIT_RETRY="${DOWNLOAD_WAIT_RETRY:-10}"
+DOWNLOAD_CONNECT_TIMEOUT="${DOWNLOAD_CONNECT_TIMEOUT:-20}"
+DOWNLOAD_READ_TIMEOUT="${DOWNLOAD_READ_TIMEOUT:-60}"
+DOWNLOAD_TIMEOUT="${DOWNLOAD_TIMEOUT:-90}"
 INSTALL_DOCKER="${INSTALL_DOCKER:-true}"
 INSTALL_SPEEDTEST="${INSTALL_SPEEDTEST:-true}"
 ENABLE_BBR="${ENABLE_BBR:-true}"
@@ -43,6 +48,18 @@ require_bool() {
   esac
 }
 
+require_positive_int() {
+  local name="$1"
+  local value="$2"
+
+  case "${value}" in
+    ''|*[!0-9]*|0)
+      echo "${name} 必须是正整数，当前值：${value}" >&2
+      exit 1
+      ;;
+  esac
+}
+
 require_bool INSTALL_HOST_TOOLS "${INSTALL_HOST_TOOLS}"
 require_bool DOWNLOAD_ONLY "${DOWNLOAD_ONLY}"
 require_bool INSTALL_DOCKER "${INSTALL_DOCKER}"
@@ -52,6 +69,11 @@ require_bool APPLY_UPDATES "${APPLY_UPDATES}"
 require_bool REMOVE_SNAPD "${REMOVE_SNAPD}"
 require_bool CLEAN_DOCS "${CLEAN_DOCS}"
 require_bool CONFIGURE_FASTFETCH "${CONFIGURE_FASTFETCH}"
+require_positive_int DOWNLOAD_TRIES "${DOWNLOAD_TRIES}"
+require_positive_int DOWNLOAD_WAIT_RETRY "${DOWNLOAD_WAIT_RETRY}"
+require_positive_int DOWNLOAD_CONNECT_TIMEOUT "${DOWNLOAD_CONNECT_TIMEOUT}"
+require_positive_int DOWNLOAD_READ_TIMEOUT "${DOWNLOAD_READ_TIMEOUT}"
+require_positive_int DOWNLOAD_TIMEOUT "${DOWNLOAD_TIMEOUT}"
 
 case "${IMAGE_PROFILE}" in
   minimal|common) ;;
@@ -67,35 +89,53 @@ case "${IMAGE_ID}" in
     OS_FAMILY="debian"
     OS_RELEASE="12"
     IMAGE_NAME="debian-12-genericcloud-amd64-pve-${IMAGE_PROFILE}"
-    IMAGE_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+    IMAGE_URLS=(
+      "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+      "https://mirror.sjtu.edu.cn/debian-cdimage/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+    )
     DOCKER_OS="debian"
     ;;
   debian13)
     OS_FAMILY="debian"
     OS_RELEASE="13"
     IMAGE_NAME="debian-13-genericcloud-amd64-pve-${IMAGE_PROFILE}"
-    IMAGE_URL="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+    IMAGE_URLS=(
+      "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+      "https://mirror.sjtu.edu.cn/debian-cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+    )
     DOCKER_OS="debian"
     ;;
   ubuntu2204)
     OS_FAMILY="ubuntu"
     OS_RELEASE="22.04"
     IMAGE_NAME="ubuntu-22.04-server-cloudimg-amd64-pve-${IMAGE_PROFILE}"
-    IMAGE_URL="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    IMAGE_URLS=(
+      "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+      "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cloud-images/jammy/current/jammy-server-cloudimg-amd64.img"
+      "https://mirror.sjtu.edu.cn/ubuntu-cloud-images/jammy/current/jammy-server-cloudimg-amd64.img"
+    )
     DOCKER_OS="ubuntu"
     ;;
   ubuntu2404)
     OS_FAMILY="ubuntu"
     OS_RELEASE="24.04"
     IMAGE_NAME="ubuntu-24.04-server-cloudimg-amd64-pve-${IMAGE_PROFILE}"
-    IMAGE_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    IMAGE_URLS=(
+      "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+      "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cloud-images/noble/current/noble-server-cloudimg-amd64.img"
+      "https://mirror.sjtu.edu.cn/ubuntu-cloud-images/noble/current/noble-server-cloudimg-amd64.img"
+    )
     DOCKER_OS="ubuntu"
     ;;
   ubuntu2604)
     OS_FAMILY="ubuntu"
     OS_RELEASE="26.04"
     IMAGE_NAME="ubuntu-26.04-server-cloudimg-amd64-pve-${IMAGE_PROFILE}"
-    IMAGE_URL="https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img"
+    IMAGE_URLS=(
+      "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img"
+      "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cloud-images/resolute/current/resolute-server-cloudimg-amd64.img"
+      "https://mirror.sjtu.edu.cn/ubuntu-cloud-images/resolute/current/resolute-server-cloudimg-amd64.img"
+    )
     DOCKER_OS="ubuntu"
     ;;
   *)
@@ -104,6 +144,8 @@ case "${IMAGE_ID}" in
     exit 1
     ;;
 esac
+
+IMAGE_URL="${IMAGE_URLS[0]}"
 
 if [ -z "${IMAGE_DISK_SIZE}" ]; then
   case "${IMAGE_ID}" in
@@ -143,6 +185,9 @@ echo "系统：${OS_FAMILY} ${OS_RELEASE}"
 echo "时区：${TIMEZONE}"
 echo "虚拟磁盘：${IMAGE_DISK_SIZE}"
 echo "根分区：${ROOT_PARTITION}"
+echo "下载重试：每个源 ${DOWNLOAD_TRIES} 次，失败后切换下一个源"
+echo "备用镜像源："
+printf '  - %s\n' "${IMAGE_URLS[@]}"
 echo "保留 cloud kernel：true"
 echo "安装 Docker：${EFFECTIVE_INSTALL_DOCKER} (请求值：${INSTALL_DOCKER})"
 echo "安装 Speedtest CLI：${EFFECTIVE_INSTALL_SPEEDTEST} (请求值：${INSTALL_SPEEDTEST})"
@@ -181,36 +226,41 @@ cd "${WORKDIR}"
 
 download_cloud_image() {
   local dest="$1"
-  local url="$2"
   local tmp="${dest}.part"
+  shift
 
   mkdir -p "$(dirname "${dest}")"
-  rm -f "${tmp}"
-  echo "尝试下载：${url}"
-  if wget \
-    --tries=8 \
-    --waitretry=15 \
-    --random-wait \
-    --connect-timeout=20 \
-    --read-timeout=60 \
-    --timeout=60 \
-    --retry-connrefused \
-    --progress=dot:giga \
-    -O "${tmp}" \
-    "${url}"; then
-    mv -f "${tmp}" "${dest}"
-    return 0
-  else
-    rm -f "${tmp}"
-  fi
 
-  echo "镜像下载失败：${url}" >&2
+  for url in "$@"; do
+    rm -f "${tmp}"
+    echo "尝试下载：${url}"
+    if wget \
+      --tries="${DOWNLOAD_TRIES}" \
+      --waitretry="${DOWNLOAD_WAIT_RETRY}" \
+      --random-wait \
+      --connect-timeout="${DOWNLOAD_CONNECT_TIMEOUT}" \
+      --read-timeout="${DOWNLOAD_READ_TIMEOUT}" \
+      --timeout="${DOWNLOAD_TIMEOUT}" \
+      --retry-connrefused \
+      --max-redirect=5 \
+      --progress=dot:giga \
+      -O "${tmp}" \
+      "${url}"; then
+      mv -f "${tmp}" "${dest}"
+      return 0
+    fi
+
+    rm -f "${tmp}"
+    echo "镜像源下载失败，切换下一个源：${url}" >&2
+  done
+
+  echo "所有镜像源下载失败" >&2
   return 1
 }
 
-echo "[3/8] 下载官方 Cloud Image..."
+echo "[3/8] 下载 Cloud Image..."
 if [ ! -f "${SRC_IMAGE}" ]; then
-  download_cloud_image "${SRC_IMAGE}" "${IMAGE_URL}"
+  download_cloud_image "${SRC_IMAGE}" "${IMAGE_URLS[@]}"
 else
   echo "原始镜像已存在，跳过下载：${SRC_IMAGE}"
 fi
