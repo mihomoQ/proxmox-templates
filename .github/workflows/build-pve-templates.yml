@@ -44,8 +44,6 @@ jobs:
 
     strategy:
       fail-fast: false
-      # 只下载每个系统的源镜像一次；限制为 2 个并发，兼顾速度和上游限流风险。
-      max-parallel: 2
       matrix:
         include:
           - image_id: debian12
