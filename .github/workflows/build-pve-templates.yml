@@ -32,15 +32,73 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: pve-cloud-templates-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  prepare-source:
+    name: Download ${{ matrix.image_id }} source image
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      # 串行下载上游源镜像，避免同一次 workflow 对官方源造成并发压力。
+      max-parallel: 1
+      matrix:
+        include:
+          - image_id: debian12
+          - image_id: debian13
+          - image_id: ubuntu2204
+          - image_id: ubuntu2404
+          - image_id: ubuntu2604
+
+    env:
+      IMAGE_ID: ${{ matrix.image_id }}
+      IMAGE_PROFILE: minimal
+      WORKDIR: /tmp/pve-cloud-source/${{ matrix.image_id }}
+      SRC_IMAGE: /tmp/pve-cloud-source/${{ matrix.image_id }}/${{ matrix.image_id }}-src.qcow2
+      DOWNLOAD_ONLY: "true"
+      INSTALL_HOST_TOOLS: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install download tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            wget \
+            ca-certificates
+
+      - name: Download source image
+        run: |
+          chmod +x ./build-pve-cloud-image.sh
+          ./build-pve-cloud-image.sh
+          ls -lh "${SRC_IMAGE}"
+
+      - name: Upload source image artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: pve-source-${{ matrix.image_id }}
+          path: /tmp/pve-cloud-source/${{ matrix.image_id }}/${{ matrix.image_id }}-src.qcow2
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
   build:
     name: Build ${{ matrix.image_id }} ${{ matrix.image_profile }}
+    needs: prepare-source
     # 固定 Ubuntu 22.04 runner，避免 ubuntu-latest 上 libguestfs/QEMU 网络栈变化影响构建。
     runs-on: ubuntu-22.04
     timeout-minutes: 120
 
     strategy:
       fail-fast: false
+      # 源镜像已通过 artifact 复用；这里限制并发是为了控制 libguestfs/apt 负载。
+      max-parallel: 3
       matrix:
         include:
           - image_id: debian12
@@ -78,6 +136,7 @@ jobs:
       IMAGE_ID: ${{ matrix.image_id }}
       IMAGE_PROFILE: ${{ matrix.image_profile }}
       WORKDIR: /tmp/pve-cloud-build/${{ matrix.image_id }}-${{ matrix.image_profile }}
+      SRC_IMAGE: /tmp/pve-cloud-build/${{ matrix.image_id }}-${{ matrix.image_profile }}/source/${{ matrix.image_id }}-src.qcow2
       INSTALL_DOCKER: ${{ inputs.install_docker }}
       INSTALL_SPEEDTEST: ${{ inputs.install_speedtest }}
       ENABLE_BBR: ${{ inputs.enable_bbr }}
@@ -86,11 +145,22 @@ jobs:
       APPLY_UPDATES: ${{ inputs.apply_updates }}
       CLEAN_DOCS: "true"
       CONFIGURE_FASTFETCH: "true"
+      INSTALL_HOST_TOOLS: "false"
       LIBGUESTFS_BACKEND: direct
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Download source image artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: pve-source-${{ matrix.image_id }}
+          path: /tmp/pve-cloud-build/${{ matrix.image_id }}-${{ matrix.image_profile }}/source
+
+      - name: Show source image
+        run: |
+          ls -lh "${SRC_IMAGE}"
 
       - name: Install host build tools
         run: |
@@ -141,12 +211,14 @@ jobs:
             ${{ env.WORKDIR }}/dist/*
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0
 
   release:
     name: Publish GitHub Release
     if: ${{ inputs.publish_release }}
     needs: build
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
 
     steps:
       - name: Generate release metadata
@@ -161,6 +233,7 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           path: dist
+          pattern: "*-pve-cloud-template-*"
           merge-multiple: true
 
       - name: Show release files
@@ -185,6 +258,8 @@ jobs:
         with:
           tag_name: ${{ steps.meta.outputs.release_tag }}
           name: ${{ steps.meta.outputs.release_name }}
+          overwrite_files: true
+          fail_on_unmatched_files: true
           body: |
             PVE Cloud Templates 自动构建版本。
 
@@ -204,7 +279,8 @@ jobs:
             - root 登录由 PVE cloud-init 注入的密码或 SSH key 决定
             - minimal 只安装 PVE/cloud-init 基础组件
             - common 额外安装常用排障和运维工具
-            - Docker、Speedtest、TCP 窗口调优 / BBR 只在 common 档位生效
+            - Docker、TCP 窗口调优 / BBR 只在 common 档位生效
+            - Speedtest CLI 只在 Debian 13 common 档位生效
 
             common 可选功能：
             - 安装 Docker CE：${{ inputs.install_docker }}

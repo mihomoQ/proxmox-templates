@@ -17,8 +17,9 @@ WORKDIR="${WORKDIR:-$HOME/pve-cloud-build/${IMAGE_ID}-${IMAGE_PROFILE}}"
 TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
 IMAGE_DISK_SIZE="${IMAGE_DISK_SIZE:-}"
 ROOT_PARTITION="${ROOT_PARTITION:-/dev/sda1}"
-IMAGE_FALLBACK_URL=""
 
+INSTALL_HOST_TOOLS="${INSTALL_HOST_TOOLS:-true}"
+DOWNLOAD_ONLY="${DOWNLOAD_ONLY:-false}"
 INSTALL_DOCKER="${INSTALL_DOCKER:-true}"
 INSTALL_SPEEDTEST="${INSTALL_SPEEDTEST:-true}"
 ENABLE_BBR="${ENABLE_BBR:-true}"
@@ -28,6 +29,29 @@ CLEAN_DOCS="${CLEAN_DOCS:-true}"
 CONFIGURE_FASTFETCH="${CONFIGURE_FASTFETCH:-true}"
 
 export LIBGUESTFS_BACKEND="${LIBGUESTFS_BACKEND:-direct}"
+
+require_bool() {
+  local name="$1"
+  local value="$2"
+
+  case "${value}" in
+    true|false) ;;
+    *)
+      echo "${name} 必须是 true 或 false，当前值：${value}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+require_bool INSTALL_HOST_TOOLS "${INSTALL_HOST_TOOLS}"
+require_bool DOWNLOAD_ONLY "${DOWNLOAD_ONLY}"
+require_bool INSTALL_DOCKER "${INSTALL_DOCKER}"
+require_bool INSTALL_SPEEDTEST "${INSTALL_SPEEDTEST}"
+require_bool ENABLE_BBR "${ENABLE_BBR}"
+require_bool APPLY_UPDATES "${APPLY_UPDATES}"
+require_bool REMOVE_SNAPD "${REMOVE_SNAPD}"
+require_bool CLEAN_DOCS "${CLEAN_DOCS}"
+require_bool CONFIGURE_FASTFETCH "${CONFIGURE_FASTFETCH}"
 
 case "${IMAGE_PROFILE}" in
   minimal|common) ;;
@@ -44,7 +68,6 @@ case "${IMAGE_ID}" in
     OS_RELEASE="12"
     IMAGE_NAME="debian-12-genericcloud-amd64-pve-${IMAGE_PROFILE}"
     IMAGE_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
-    IMAGE_FALLBACK_URL="https://cdimage.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
     DOCKER_OS="debian"
     ;;
   debian13)
@@ -52,7 +75,6 @@ case "${IMAGE_ID}" in
     OS_RELEASE="13"
     IMAGE_NAME="debian-13-genericcloud-amd64-pve-${IMAGE_PROFILE}"
     IMAGE_URL="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
-    IMAGE_FALLBACK_URL="https://cdimage.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
     DOCKER_OS="debian"
     ;;
   ubuntu2204)
@@ -90,7 +112,7 @@ if [ -z "${IMAGE_DISK_SIZE}" ]; then
   esac
 fi
 
-SRC_IMAGE="${WORKDIR}/${IMAGE_NAME}-src.qcow2"
+SRC_IMAGE="${SRC_IMAGE:-${WORKDIR}/${IMAGE_NAME}-src.qcow2}"
 WORK_IMAGE="${WORKDIR}/${IMAGE_NAME}-work.qcow2"
 FINAL_IMAGE="${FINAL_IMAGE:-${WORKDIR}/${IMAGE_NAME}.qcow2}"
 
@@ -112,11 +134,11 @@ echo "开始定制 PVE Cloud Image"
 echo "镜像 ID：${IMAGE_ID}"
 echo "镜像档位：${IMAGE_PROFILE}"
 echo "镜像地址：${IMAGE_URL}"
-if [ -n "${IMAGE_FALLBACK_URL}" ]; then
-  echo "备用镜像地址：${IMAGE_FALLBACK_URL}"
-fi
+echo "源镜像：${SRC_IMAGE}"
 echo "工作目录：${WORKDIR}"
-echo "最终镜像：${FINAL_IMAGE}"
+if [ "${DOWNLOAD_ONLY}" = "false" ]; then
+  echo "最终镜像：${FINAL_IMAGE}"
+fi
 echo "系统：${OS_FAMILY} ${OS_RELEASE}"
 echo "时区：${TIMEZONE}"
 echo "虚拟磁盘：${IMAGE_DISK_SIZE}"
@@ -126,20 +148,32 @@ echo "安装 Docker：${EFFECTIVE_INSTALL_DOCKER} (请求值：${INSTALL_DOCKER}
 echo "安装 Speedtest CLI：${EFFECTIVE_INSTALL_SPEEDTEST} (请求值：${INSTALL_SPEEDTEST})"
 echo "启用 TCP 窗口调优 / BBR：${EFFECTIVE_ENABLE_BBR} (请求值：${ENABLE_BBR})"
 echo "应用系统更新：${APPLY_UPDATES}"
+echo "仅下载源镜像：${DOWNLOAD_ONLY}"
+echo "安装宿主工具：${INSTALL_HOST_TOOLS}"
 echo "移除 snapd：${REMOVE_SNAPD}"
 echo "清理文档缓存：${CLEAN_DOCS}"
 echo "配置 fastfetch：${CONFIGURE_FASTFETCH}"
 echo "libguestfs 后端：${LIBGUESTFS_BACKEND}"
 echo "============================================================"
 
-echo "[1/8] 安装宿主机构建工具..."
-sudo apt-get update
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-  libguestfs-tools \
-  qemu-utils \
-  wget \
-  curl \
-  ca-certificates
+if [ "${INSTALL_HOST_TOOLS}" = "true" ]; then
+  echo "[1/8] 安装宿主机构建工具..."
+  sudo apt-get update
+  if [ "${DOWNLOAD_ONLY}" = "true" ]; then
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      wget \
+      ca-certificates
+  else
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      libguestfs-tools \
+      qemu-utils \
+      wget \
+      curl \
+      ca-certificates
+  fi
+else
+  echo "[1/8] 跳过宿主机构建工具安装..."
+fi
 
 echo "[2/8] 创建工作目录..."
 mkdir -p "${WORKDIR}"
@@ -147,40 +181,43 @@ cd "${WORKDIR}"
 
 download_cloud_image() {
   local dest="$1"
-  shift
+  local url="$2"
   local tmp="${dest}.part"
-  local url
 
+  mkdir -p "$(dirname "${dest}")"
   rm -f "${tmp}"
-  for url in "$@"; do
-    [ -n "${url}" ] || continue
-    echo "尝试下载：${url}"
-    if wget \
-      --tries=3 \
-      --waitretry=5 \
-      --connect-timeout=15 \
-      --read-timeout=30 \
-      --timeout=30 \
-      --retry-connrefused \
-      --progress=dot:giga \
-      -O "${tmp}" \
-      "${url}"; then
-      mv -f "${tmp}" "${dest}"
-      return 0
-    fi
-    echo "下载失败，准备尝试下一个地址：${url}" >&2
+  echo "尝试下载：${url}"
+  if wget \
+    --tries=8 \
+    --waitretry=15 \
+    --random-wait \
+    --connect-timeout=20 \
+    --read-timeout=60 \
+    --timeout=60 \
+    --retry-connrefused \
+    --progress=dot:giga \
+    -O "${tmp}" \
+    "${url}"; then
+    mv -f "${tmp}" "${dest}"
+    return 0
+  else
     rm -f "${tmp}"
-  done
+  fi
 
-  echo "所有镜像地址下载失败" >&2
+  echo "镜像下载失败：${url}" >&2
   return 1
 }
 
 echo "[3/8] 下载官方 Cloud Image..."
 if [ ! -f "${SRC_IMAGE}" ]; then
-  download_cloud_image "${SRC_IMAGE}" "${IMAGE_URL}" "${IMAGE_FALLBACK_URL}"
+  download_cloud_image "${SRC_IMAGE}" "${IMAGE_URL}"
 else
   echo "原始镜像已存在，跳过下载：${SRC_IMAGE}"
+fi
+
+if [ "${DOWNLOAD_ONLY}" = "true" ]; then
+  echo "源镜像下载完成：${SRC_IMAGE}"
+  exit 0
 fi
 
 echo "复制并扩大工作镜像虚拟磁盘..."
@@ -433,13 +470,13 @@ sudo chown "$(id -u):$(id -g)" "${FINAL_IMAGE}"
 echo "[7/8] 最终镜像信息..."
 qemu-img info "${FINAL_IMAGE}"
 
-echo "[7/8] 生成 SHA256 校验文件..."
+echo "[8/8] 生成 SHA256 校验文件..."
 (
   cd "$(dirname "${FINAL_IMAGE}")"
   sha256sum "$(basename "${FINAL_IMAGE}")" | tee "$(basename "${FINAL_IMAGE}").sha256"
 )
 
-echo "[8/8] 完成"
+echo "完成"
 echo "============================================================"
 echo "PVE Cloud Image 定制完成"
 echo "镜像 ID：${IMAGE_ID}"

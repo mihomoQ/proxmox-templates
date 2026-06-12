@@ -5,7 +5,7 @@
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20%7C%2026.04-E95420)
 ![Kernel](https://img.shields.io/badge/kernel-cloud%2Fvirtual-2F855A)
 
-面向 Proxmox VE 的轻量 Cloud Image 构建仓库。默认基于官方 Debian `genericcloud` / Ubuntu `cloudimg`，保留官方 cloud/virtual kernel，不预置 root 密码。`minimal` 永远只安装 PVE 必要组件；`common` 默认安装常用工具，并默认启用 Docker、Speedtest、TCP 窗口调优 / BBR，可在 Action 中关闭。
+面向 Proxmox VE 的轻量 Cloud Image 构建仓库。默认基于官方 Debian `genericcloud` / Ubuntu `cloudimg`，保留官方 cloud/virtual kernel，不预置 root 密码。`minimal` 只安装 PVE/cloud-init 基础组件；`common` 额外安装常用排障工具，并默认启用 Docker、TCP 调优 / BBR。Speedtest CLI 仅在 Debian 13 `common` 中默认安装。
 
 标签：`proxmox`、`pve`、`cloud-init`、`debian-genericcloud`、`ubuntu-cloudimg`、`qemu-guest-agent`、`qcow2`、`minimal-image`
 
@@ -55,7 +55,7 @@ tcpdump lsof socat zip zstd bash-completion
 
 ## 支持镜像
 
-每次 GitHub Actions 会同时构建 `minimal` 和 `common` 两档，共 10 个 amd64 镜像：
+每次 GitHub Actions 会构建 `minimal` 和 `common` 两档，共 10 个 amd64 镜像：
 
 | 系统 | `minimal` 文件名 | `common` 文件名 |
 | --- | --- | --- |
@@ -67,7 +67,13 @@ tcpdump lsof socat zip zstd bash-completion
 
 ## GitHub Actions 构建
 
-Fork 后进入 `Actions`，运行 `Build PVE Cloud Templates`。一次运行会构建全部 5 个系统的 `minimal` 和 `common` 镜像。
+Fork 后进入 `Actions`，手动运行 `Build PVE Cloud Templates`。仓库默认只提供 `workflow_dispatch`，不会在每次 push 后自动构建和发布。
+
+构建流程：
+
+1. `prepare-source` 串行下载 5 个官方源镜像，并上传为短期 artifact。
+2. `build` 复用源镜像 artifact 构建 10 个 `minimal` / `common` 模板，避免重复请求官方 cloud image 源。
+3. `release` 只下载最终模板 artifact，发布 `.qcow2` 和 `.qcow2.sha256`。
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -194,13 +200,15 @@ qm create "${VMID}" \
   --cores 1
 
 qm importdisk "${VMID}" "${IMAGE_DIR}/${IMAGE}" "${STORAGE}"
-qm set "${VMID}" --scsi0 "${STORAGE}:vm-${VMID}-disk-0,discard=on,ssd=1"
+IMPORTED_DISK="$(qm config "${VMID}" | awk -F': ' '/^unused[0-9]+:/ {print $2; exit}')"
+[ -n "${IMPORTED_DISK}" ] || { echo "未找到导入后的 unused 磁盘"; exit 1; }
+qm set "${VMID}" --scsi0 "${IMPORTED_DISK},discard=on,ssd=1"
 qm set "${VMID}" --boot order=scsi0
 qm set "${VMID}" --ipconfig0 ip=dhcp
 qm template "${VMID}"
 ```
 
-如果你的存储导入后磁盘名不是 `vm-${VMID}-disk-0`，先执行：
+如果需要手动确认导入后的磁盘名，执行：
 
 ```bash
 qm config "${VMID}"
@@ -246,7 +254,8 @@ systemctl status qemu-guest-agent --no-pager
 
 - 默认保留官方 cloud/virtual kernel，不主动安装 `linux-image-amd64` / `linux-generic`。
 - 默认使用官方 cloud image，不从 ISO 安装，构建过程可复现。
-- `minimal` 默认不包含 Docker、Speedtest、TCP 窗口调优 / BBR；这些功能只在 `common` 中默认开启，并可手动关闭。
+- GitHub Actions 会复用每个系统的源镜像 artifact，避免 `minimal` 和 `common` 重复下载同一个上游镜像。
+- `minimal` 默认不包含 Docker、Speedtest、TCP 窗口调优 / BBR；Docker 和 TCP 调优只在 `common` 中默认开启，Speedtest 只在 Debian 13 `common` 中默认开启，均可手动关闭。
 - TCP 调优参数由镜像构建脚本写入固定的 sysctl 配置文件。
 - 默认清理 APT 缓存、cloud-init 状态、日志、文档和 man/info，最后用 `virt-sparsify --compress` 压缩 qcow2。
 - 默认禁用 `deb-src`，关闭 cloud-init 首次启动自动 package upgrade，减少首次启动不可控耗时。
