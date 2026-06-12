@@ -97,8 +97,6 @@ jobs:
 
     strategy:
       fail-fast: false
-      # 源镜像已通过 artifact 复用；这里限制并发是为了控制 libguestfs/apt 负载。
-      max-parallel: 3
       matrix:
         include:
           - image_id: debian12
